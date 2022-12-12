@@ -2,19 +2,29 @@
 
 from werkzeug.routing import Map, Rule
 from werkzeug.exceptions import NotFound
-from werkzeug.http import parse_cookie
-from flask import request
+
+
+def log_request(self):
+    log = self.server.log
+    if log:
+        if hasattr(log, 'info'):
+            log.info(self.format_request() + '\n')
+        else:
+            log.write(self.format_request() + '\n')
 
 
 # Monkeys are made for freedom.
 try:
-    from geventwebsocket.gunicorn.workers import GeventWebSocketWorker as Worker
-    from geventwebsocket.handler import WebSocketHandler
-    from gunicorn.workers.ggevent import PyWSGIHandler
-
     import gevent
+    from geventwebsocket.gunicorn.workers import GeventWebSocketWorker as Worker
 except ImportError:
     pass
+
+
+if 'gevent' in locals():
+    # Freedom-Patch logger for Gunicorn.
+    if hasattr(gevent, 'pywsgi'):
+        gevent.pywsgi.WSGIHandler.log_request = log_request
 
 
 class SocketMiddleware(object):
@@ -29,15 +39,9 @@ class SocketMiddleware(object):
         try:
             handler, values = adapter.match()
             environment = environ['wsgi.websocket']
-            cookie = None
-            if 'HTTP_COOKIE' in environ:
-                cookie = parse_cookie(environ['HTTP_COOKIE'])
 
             with self.app.app_context():
                 with self.app.request_context(environ):
-                    # add cookie to the request to have correct session handling
-                    request.cookie = cookie
-
                     handler(environment, **values)
                     return []
         except (NotFound, KeyError):
@@ -75,7 +79,7 @@ class Sockets(object):
         return decorator
 
     def add_url_rule(self, rule, _, f, **options):
-        self.url_map.add(Rule(rule, endpoint=f))
+        self.url_map.add(Rule(rule, endpoint=f, websocket=True))
 
     def register_blueprint(self, blueprint, **options):
         """
@@ -101,13 +105,5 @@ class Sockets(object):
 
 
 # CLI sugar.
-if ('Worker' in locals() and 'PyWSGIHandler' in locals() and
-        'gevent' in locals()):
-
-    class GunicornWebSocketHandler(PyWSGIHandler, WebSocketHandler):
-        def log_request(self):
-            if '101' not in self.status:
-                super(GunicornWebSocketHandler, self).log_request()
-
-    Worker.wsgi_handler = GunicornWebSocketHandler
+if 'Worker' in locals():
     worker = Worker
